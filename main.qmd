@@ -1,0 +1,196 @@
+
+# Sprint 1 - Statistical computing with R and Python
+
+
+#### Importação de libs
+```{r}
+#| message: false
+#| warning: false
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(writexl)
+library(knitr)
+```
+
+#### Importação da Base de Dados
+
+Utilizaremos a base de dados [Sistema de Subvenção Econômica ao Prêmio do Seguro Rural](https://dados.agricultura.gov.br/dataset/sisser3) do Portal de Dados Abertos do Ministério da Agricultura e Pecuária.
+
+
+```{r}
+df_sompo = read_excel("dados/dados_abertos_psr_2016a2024.xlsx", na = c("", "NA", "-"))
+```
+
+#### Analise Exploratoria
+
+```{r}
+glimpse(df_sompo)
+```
+
+Notamos que o arquivo possui 1, 048, 565 linhas e 38 colunas, para nosso desafio, utilizaremos apenas 150 observações de cada coluna.
+Mas antes precisamos garantir a reprodutibilidade, fixando o seed.
+
+```{r}
+set.seed(42)
+```
+
+#### Nova base de dados
+
+```{r}
+new_df <- df_sompo %>%
+    drop_na(NM_CULTURA_GLOBAL, NR_AREA_TOTAL, NivelDeCobertura, ANO_APOLICE, 
+            NR_PRODUTIVIDADE_ESTIMADA, VL_PREMIO_LIQUIDO) %>%
+    mutate(
+        valor_indenizacao_brl = as.numeric(ifelse(is.na(VALOR_INDENIZAÇÃO), 0, VALOR_INDENIZAÇÃO)),
+        causa_sinistro = ifelse(is.na(EVENTO_PREPONDERANTE), "Sem Sinistro", trimws(EVENTO_PREPONDERANTE)),
+        porte_propriedade = factor(
+            ifelse(NR_AREA_TOTAL <= 100, "Pequeno",
+                ifelse(NR_AREA_TOTAL <= 500, "Médio", "Grande")
+            ),
+            levels = c("Pequeno", "Médio", "Grande"),
+            ordered = TRUE
+        ),
+        nivel_cobertura = paste0(NivelDeCobertura * 100, "%")
+    ) %>%
+    select(
+    # Qualitativas Nominais
+    Cultura_Agricola = NM_CULTURA_GLOBAL, 
+    Causa_Sinistro = causa_sinistro,
+    
+    # Qualitativas Ordinais
+    porte_propriedade = porte_propriedade,
+    Nivel_Cobertura = nivel_cobertura,
+    
+    # Quantitativas Discretas
+    ano_police = ANO_APOLICE,
+    produtividade_estimada = NR_PRODUTIVIDADE_ESTIMADA,
+    
+    # Quantitativas Contínuas
+    valor_premio_brl = VL_PREMIO_LIQUIDO,
+    valor_indenizacao_brl = valor_indenizacao_brl
+  ) %>%
+  # Sorteia 150 linhas
+  sample_n(150)
+```
+
+```{r}
+kable(head(new_df, 5), caption = "Amostra das 5 primeiras observações da base final")
+```
+
+##### Exportando nova base de dados em .xlsx
+```{r}
+write_xlsx(new_df, path = "base_dados_sompo.xlsx")
+```
+
+## Tabelas de Distribuição de Frequências 
+
+Nesta etapa, construímos as tabelas de distribuição de frequência para uma variável discreta e uma contínua, extraindo insights de negócio voltados ao contexto de subscrição de riscos da Sompo.
+
+### Construção da Tabela de Frequência Discreta
+
+```{r}
+tabela_discreta <- new_df %>%
+  count(produtividade_estimada, name = "frequencia_absoluta") %>%
+  mutate(
+    frequencia_relativa = frequencia_absoluta / sum(frequencia_absoluta),
+    frequencia_percentual = paste0(round(frequencia_relativa * 100, 2), "%")
+  ) %>%
+  arrange(desc(frequencia_absoluta))
+
+kable(head(tabela_discreta, 10), caption = "Top 10 Frequências - Produtividade Estimada")
+
+# Insight 1: Arredondamento e Comportamento de Contratação.
+# Notamos que as produtividades mais frequentes do Top 10 são números perfeitamente redondos 
+# (ex: 1000, 3000, 3600, 4800, 5500). Isso indica que, no momento da subscrição do risco, 
+# muitos corretores ou produtores utilizam médias regionais ou tetos padronizados de saca/hectare 
+# para fechar a apólice, em vez de informar a projeção exata e fracionada da fazenda.
+
+# Insight 2: Altíssima Dispersão e Pulverização de Risco.
+# O valor mais comum de toda a base (1000.0) representa apenas 2,67% da amostra total. 
+# Isso comprova uma carteira de seguros extremamente pulverizada e heterogênea. Para a Sompo, 
+# isso é um indicador positivo de saúde financeira: o risco não está concentrado em um único 
+# perfil de produtividade. Se uma crise atingir produtores na faixa dos 3000 kg/ha, 
+# mais de 97% da carteira desta amostra permanecerá intacta.
+```
+
+#### INSIGHTS DE NEGÓCIO - VARIÁVEL DISCRETA
+
+##### Insight 1: Arredondamento e Comportamento de Contratação.
+Notamos que as produtividades mais frequentes do Top 10 são números perfeitamente redondos 
+ex: 1000, 3000, 3600, 4800, 5500. Isso indica que, no momento da subscrição do risco, 
+muitos corretores ou produtores utilizam médias regionais ou tetos padronizados de saca/hectare 
+para fechar a apólice, em vez de informar a projeção exata e fracionada da fazenda.
+
+##### Insight 2: Altíssima Dispersão e Pulverização de Risco.
+O valor mais comum de toda a base (1000.0) representa apenas 2,67% da amostra total. 
+Isso comprova uma carteira de seguros extremamente pulverizada e heterogênea. Para a Sompo, 
+isso é um indicador positivo de saúde financeira: o risco não está concentrado em um único 
+perfil de produtividade. Se uma crise atingir produtores na faixa dos 3000 kg/ha, 
+mais de 97% da carteira desta amostra permanecerá intacta.
+
+### Construção da Tabela de Frequência Contínua
+
+```{r}
+# 1. Filtro de Qualidade: Para a tabela de frequências de indenização ser útil,
+# focamos apenas nos sinistros que geraram pagamento (valor > 0).
+df_sinistros <- new_df %>% 
+  filter(valor_indenizacao_brl > 0)
+
+# 2. Aplicação da Regra de Sturges
+# k = 1 + 3.322 * log10(n)
+n_obs <- nrow(df_sinistros)
+k_sturges <- round(1 + 3.322 * log10(n_obs))
+
+# 3. Construção da Tabela de Frequência Contínua
+tabela_continua <- df_sinistros %>%
+  mutate(
+    faixa_indenizacao = cut(
+      valor_indenizacao_brl, 
+      breaks = k_sturges, 
+      include.lowest = TRUE,
+      dig.lab = 10 # Garante que os números não fiquem em notação científica (ex: 1e+05)
+    )
+  ) %>%
+  count(faixa_indenizacao, name = "frequencia_absoluta") %>%
+  mutate(
+    frequencia_relativa = frequencia_absoluta / sum(frequencia_absoluta),
+    frequencia_percentual = paste0(round(frequencia_relativa * 100, 2), "%")
+  )
+# 4. Exibição da Tabela Formatada
+kable(tabela_continua, caption = "Distribuição de Frequências - Valor de Indenização (Regra de Sturges)")
+
+# Insight 1: Concentração em Sinistros de Menor Severidade. 
+# A tabela mostra que exatamente 80% das indenizações (43,33% + 36,67%) 
+# estão concentradas nas duas primeiras faixas (valores até R$ 115 mil). 
+# Isso indica que a operação lida diariamente com perdas parciais ou 
+# sinistros em propriedades menores. Isso gera alto volume de trabalho 
+# operacional (vistorias de peritos), mas com impacto unitário menor no caixa.
+
+# Insight 2: Risco de Cauda Longa e Eventos Catastróficos. 
+# As faixas finais da tabela representam uma frequência baixíssima 
+# (apenas 1 ou 2 casos, na casa dos 3% a 6%), mas com valores que chegam a 
+# ultrapassar R$ 338 mil por apólice. Esses casos raros representam o 
+# "risco catastrófico" (ex: perda total de uma grande lavoura por geada). 
+# A seguradora precisa garantir políticas de resseguro fortes para essas faixas.
+```
+
+#### INSIGHTS DE NEGÓCIO - VARIÁVEL Contínua
+
+##### Insight 1: Concentração em Sinistros de Menor Severidade. 
+A tabela mostra que exatamente 80% das indenizações (43,33% + 36,67%) 
+estão concentradas nas duas primeiras faixas (valores até R$ 115 mil). 
+Isso indica que a operação lida diariamente com perdas parciais ou 
+sinistros em propriedades menores. Isso gera alto volume de trabalho 
+operacional (vistorias de peritos), mas com impacto unitário menor no caixa.
+
+##### Insight 2: Risco de Cauda Longa e Eventos Catastróficos. 
+As faixas finais da tabela representam uma frequência baixíssima 
+(apenas 1 ou 2 casos, na casa dos 3% a 6%), mas com valores que chegam a 
+ultrapassar R$ 338 mil por apólice. Esses casos raros representam o 
+"risco catastrófico" (ex: perda total de uma grande lavoura por geada). 
+A seguradora precisa garantir políticas de resseguro fortes para essas faixas.
+
+## Conclusão
+
+A análise da carteira revela um risco altamente pulverizado e uma forte padronização comercial nas apólices, cenário ideal para a criação de pacotes de seguros pré-precificados que aceleram as vendas. Como 80% das indenizações referem-se a sinistros de pequeno porte e rotineiros (até R$ 115 mil), a Sompo pode gerar valor imediato e cortar custos implementando a regulação automática (Fast-Track) por satélite para esses casos. Por fim, a proteção do caixa e do Loss Ratio da companhia deve focar no risco de "cauda longa", exigindo contratos de resseguro direcionados exclusivamente para absorver os 3% de sinistros catastróficos (acima de R$ 280 mil) causados por eventos climáticos extremos.
