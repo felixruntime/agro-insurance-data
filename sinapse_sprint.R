@@ -34,7 +34,7 @@ new_df <- df_sompo %>%
             levels = c("Pequeno", "Médio", "Grande"),
             ordered = TRUE
         ),
-        nivel_cobertura = paste0(NivelDeCobertura * 100, "%")
+        nivel_cobertura = paste0(round(NivelDeCobertura * 100, 2), "%")
     ) %>%
     select(
         # Qualitativas Nominais
@@ -106,7 +106,8 @@ tabela_continua <- df_sinistros %>%
     count(faixa_indenizacao, name = "frequencia_absoluta") %>%
     mutate(
         frequencia_relativa = frequencia_absoluta / sum(frequencia_absoluta),
-        frequencia_percentual = paste0(round(frequencia_relativa * 100, 2), "%")
+        frequencia_percentual = paste0(round(frequencia_relativa * 100, 2), "%"),
+        frequencia_acumulada  = cumsum(frequencia_relativa)
     )
 
 # Exibição da Tabela
